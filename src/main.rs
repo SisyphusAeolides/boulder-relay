@@ -1129,7 +1129,7 @@ impl SimpleComponent for AppModel {
     type Output = ();
 
     view! {
-        adw::Window {
+        gtk::ApplicationWindow {
             set_default_size: (1200, 700),
             add_css_class: "boulder-relay",
 

@@ -1,5 +1,5 @@
 use gtk::prelude::*;
-use gtk::{gdk, CssProvider, Settings, STYLE_PROVIDER_PRIORITY_USER, WindowControls};
+use gtk::{gdk, CssProvider, Settings, STYLE_PROVIDER_PRIORITY_USER};
 
 pub const GRUVBOX_CSS: &str = r#"
 window.boulder-relay {
@@ -10,8 +10,6 @@ window.boulder-relay {
 }
 
 paned {
-    /* Prevent panes from being dragged to extreme positions */
-    /* This works with the width_request settings on child widgets */
     min-width: 50px;
     min-height: 50px;
 }
@@ -64,6 +62,7 @@ headerbar.boulder-header button:hover {
 
 .boulder-relay .sidebar {
     background-color: #1d2021;
+    padding: 4px;
 }
 
 .boulder-relay .chat-panel {
@@ -75,17 +74,10 @@ headerbar.boulder-header button:hover {
     font-family: monospace;
 }
 
+/* Sidebar title uses Sisyphus blue accent */
 .boulder-relay .sidebar-title {
     font-weight: bold;
-    color: #10B981;
-}
-
-/* Sisyphus branding accents */
-.boulder-relay {
-    --sisyphus-accent: #3B82F6;
-}
-.boulder-relay .sidebar-title {
-    color: var(--sisyphus-accent, #10B981);
+    color: #3B82F6;
 }
 
 .boulder-relay .sidebar-subtitle {
@@ -107,35 +99,27 @@ headerbar.boulder-header button:hover {
     font-style: italic;
 }
 
-.boulder-relay button.channel-rocky {
-    color: #10B981;
-}
-
-.boulder-relay button.channel-fedora {
-    color: #3C6EB4;
-}
-
-.boulder-relay .status-connected { color: #b8bb26; }
+.boulder-relay .status-connected  { color: #b8bb26; }
 .boulder-relay .status-connecting { color: #fabd2f; }
-.boulder-relay .status-offline { color: #928374; }
+.boulder-relay .status-offline    { color: #928374; }
 
 .boulder-relay button {
     background-color: #3c3836;
     color: #b8bb26;
     border: 1px solid #504945;
     border-radius: 4px;
-    padding: 6px 12px;
+    padding: 4px 8px;
     font-family: monospace;
 }
 
-.boulder-relay button:hover { background-color: #504945; }
-.boulder-relay button.destructive { color: #fb4934; }
+.boulder-relay button:hover        { background-color: #504945; }
+.boulder-relay button.destructive  { color: #fb4934; }
+
 .boulder-relay button.part-btn {
     color: #928374;
     padding: 4px 8px;
     min-width: 0;
 }
-
 .boulder-relay button.part-btn:hover {
     color: #fb4934;
     background-color: #3c3836;
@@ -146,10 +130,9 @@ headerbar.boulder-header button:hover {
     color: #ebdbb2;
     border: 1px solid #504945;
     border-radius: 4px;
-    padding: 8px;
-    font-family: monospace;
+    padding: 4px 8px;
+    font-family: "Monospace", monospace;
 }
-
 .boulder-relay entry:focus { border: 1px solid #fe8019; }
 
 .boulder-relay scrolledwindow,
@@ -178,10 +161,6 @@ headerbar.boulder-header button:hover {
     padding: 6px;
 }
 
-.boulder-relay entry {
-    font-family: "Monospace", monospace;
-}
-
 .boulder-relay textview text {
     background-color: #282828;
     color: #ebdbb2;
@@ -195,7 +174,6 @@ headerbar.boulder-header button:hover {
     padding: 4px 12px;
     font-family: monospace;
 }
-
 .boulder-relay .user-btn:hover {
     background-color: #3c3836;
     color: #ebdbb2;
@@ -206,10 +184,9 @@ headerbar.boulder-header button:hover {
     color: #fabd2f;
     border: 1px solid transparent;
     box-shadow: none;
-    padding: 6px 8px;
+    padding: 4px 8px;
     font-family: monospace;
 }
-
 .boulder-relay .fav-btn:hover {
     background-color: #3c3836;
     border: 1px solid #504945;
@@ -224,7 +201,6 @@ headerbar.boulder-header button:hover {
     padding: 4px 8px;
     font-family: monospace;
 }
-
 .boulder-relay .mute-btn:hover {
     background-color: #3c3836;
     border: 1px solid #504945;
@@ -236,18 +212,26 @@ headerbar.boulder-header button:hover {
     text-decoration: line-through;
 }
 
-/* Better density and fonts */
-.boulder-relay .sidebar {
-    padding: 4px;
+.boulder-relay .unread-badge {
+    background-color: #fe8019;
+    color: #282828;
+    border-radius: 8px;
+    padding: 1px 5px;
+    font-size: 0.75em;
+    font-weight: bold;
 }
 
-.boulder-relay button, .boulder-relay entry {
-    padding: 4px 8px;
+.boulder-relay .mention-badge {
+    background-color: #fb4934;
+    color: #fbf1c7;
+    border-radius: 8px;
+    padding: 1px 5px;
+    font-size: 0.75em;
+    font-weight: bold;
 }
 
-/* Stub for light theme or system */
 @media (prefers-color-scheme: light) {
-    /* Extend for light Gruvbox variant if desired */
+    /* Reserved for future Gruvbox Light variant */
 }
 "#;
 
@@ -259,24 +243,21 @@ pub fn apply_gtk_settings() {
 
 pub fn load_css() {
     apply_gtk_settings();
-
     let provider = CssProvider::new();
     provider.load_from_data(GRUVBOX_CSS);
-
-    let display = gdk::Display::default().expect("GTK display must be initialized before loading CSS");
+    let display =
+        gdk::Display::default().expect("GTK display must be initialized before loading CSS");
     gtk::style_context_add_provider_for_display(&display, &provider, STYLE_PROVIDER_PRIORITY_USER);
 }
 
 pub fn build_titlebar() -> adw::HeaderBar {
     let header = adw::HeaderBar::new();
     header.add_css_class("boulder-header");
-    
     let title = gtk::Label::builder()
-        .label("Boulder Relay — Sisyphus")
+        .label("Boulder Relay")
         .css_classes(["title"])
         .build();
     header.set_title_widget(Some(&title));
-
     header
 }
 
@@ -284,16 +265,5 @@ pub fn attach_window(window: &gtk::Window) {
     window.add_css_class("boulder-relay");
     window.set_title(Some(""));
     window.set_icon_name(Some("boulder-relay"));
-    
-    // Set minimum window size to prevent excessive shrinking
-    // In GTK4, set_size_request sets the minimum size
     window.set_size_request(800, 500);
-}
-
-pub fn attach_adw_window(window: &adw::Window) {
-    window.add_css_class("boulder-relay");
-    // For adw, we can use AdwHeaderBar but keep custom for Gruvbox
-    window.set_titlebar(Some(&build_titlebar()));
-    window.set_title(Some(""));
-    window.set_icon_name(Some("boulder-relay"));
 }

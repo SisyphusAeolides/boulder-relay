@@ -1,13 +1,12 @@
 # COPR make_srpm target — invoked as:
 #   make -f .copr/Makefile srpm outdir="<outdir>" spec="<spec_path>"
-VERSION ?= 0.3.0
-
 srpm:
 	@mkdir -p .copr
-	@echo "VERSION=$(VERSION)" > .copr/version.txt
 	@set -euo pipefail; \
+	VERSION=$$(grep '^ *version' Cargo.toml | head -1 | awk -F'"' '{print $$2}'); \
+	echo "VERSION=$$VERSION" > .copr/version.txt; \
 	STAGING=$$(mktemp -d); \
-	SRC_DIR="$$STAGING/boulder-relay-$(VERSION)"; \
+	SRC_DIR="$$STAGING/boulder-relay-$$VERSION"; \
 	mkdir -p "$$SRC_DIR"; \
 	tar -C . \
 		--exclude='./target' \
@@ -15,7 +14,7 @@ srpm:
 		--exclude='./dist' \
 		--exclude='./*.tar.gz' \
 		-cf - . | tar -C "$$SRC_DIR" -xf -; \
-	tar -C "$$STAGING" -czf "$$STAGING/boulder-relay-$(VERSION).tar.gz" "boulder-relay-$(VERSION)"; \
+	tar -C "$$STAGING" -czf "$$STAGING/boulder-relay-$$VERSION.tar.gz" "boulder-relay-$$VERSION"; \
 	rpmbuild -bs "$(spec)" \
 		--define "_sourcedir $$STAGING" \
 		--define "_srcrpmdir $(outdir)" \

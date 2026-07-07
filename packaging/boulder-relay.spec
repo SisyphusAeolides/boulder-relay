@@ -1,5 +1,5 @@
 Name:           boulder-relay
-Version:        0.3.0
+Version:        0.4.0
 Release:        1%{?dist}
 Summary:        GTK4 IRC client for any IRC network (general purpose)
 
@@ -55,6 +55,11 @@ appstream-util validate-relax --nonet packaging/org.Sisyphus.BoulderRelay.metain
 %{_metainfodir}/org.Sisyphus.BoulderRelay.metainfo.xml
 
 %changelog
+* Mon Jul 06 2026 Kenny Glowner <sisyphuscode@fedoraproject.org> - 0.4.0-1
+- Update version to 0.4.0 to match Cargo.toml
+- Fix COPR build: Makefile now extracts version from Cargo.toml dynamically
+- Fix version mismatch between Cargo.toml (0.4.0) and spec file (0.3.0)
+
 * Sun Jul 05 2026 Kenny Glowner <sisyphuscode@fedoraproject.org> - 0.3.0-1
 - Switched default icon to Sisyphus logo (PNG at multiple sizes for hicolor).
 - Added per-nickname coloring in chat messages (Gruvbox palette).

@@ -267,5 +267,4 @@ pub fn attach_window(window: &gtk::Window) {
     window.add_css_class("boulder-relay");
     window.set_title(Some("Boulder Relay"));
     window.set_icon_name(Some("boulder-relay"));
-    window.set_size_request(800, 500);
 }

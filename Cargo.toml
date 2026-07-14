@@ -21,7 +21,7 @@ futures = "0.3"
 base64 = "0.21.7"
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
-matrix-sdk = { version = "0.10", features = ["e2e-encryption", "sqlite-store"] }
+matrix-sdk = { version = "0.10", features = ["e2e-encryption", "sqlite"] }
 uuid = { version = "1", features = ["v4"] }
 
 [profile.release]

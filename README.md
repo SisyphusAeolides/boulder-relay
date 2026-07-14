@@ -4,14 +4,14 @@ A fast, clean GTK4 + libadwaita IRC/Matrix client written in **100% Rust** using
 
 Named for the Sisyphus myth — the conversation you keep pushing uphill.
 
-**v0.6.0** — unified IRC + Matrix support, Element X-inspired UI, Gruvbox dark theme, and Sisyphus Blue accents.
+**v0.6.0** — unified IRC + Matrix support, Gruvbox dark theme, and Sisyphus Blue accents.
 
 ---
 
 ## Features
 
 - **Dual-protocol**: IRC and Matrix side-by-side in a single unified sidebar with protocol badges
-- **Element X-style UI**: room avatars, unread count pills, rounded composer, bubble chat view
+- **X-style UI**: room avatars, unread count pills, rounded composer, bubble chat view
 - **Multi-server IRC**: concurrent connections, per-server channels, history, accounts, and state
 - **TLS IRC** (port 6697 default), configurable port/plain fallback
 - **Modern IRC auth**: NickServ, SASL PLAIN, SASL EXTERNAL (client cert), configurable per server
@@ -49,7 +49,7 @@ All joined channels, Matrix rooms, and favorites persist between sessions.
 ### Fedora (COPR)
 
 ```bash
-dnf copr enable SisyphusAeolides/boulderX
+dnf copr enable sisyphuscode/boulderX
 dnf install boulderX
 ```
 

@@ -18,6 +18,7 @@ pub fn build_room_row(
     sender: &ComponentSender<AppModel>,
     name: &str,
     unread: u32,
+    mentions: u32,
     is_active: bool,
     protocol: Protocol,
     is_favorite: bool,
@@ -47,9 +48,14 @@ pub fn build_room_row(
     vbox.append(&protocol_badge(&protocol));
     hbox.append(&vbox);
 
-    if unread > 0 {
+    if unread > 0 || mentions > 0 {
+        let label = if mentions > 0 {
+            format!("@{mentions}")
+        } else {
+            unread.to_string()
+        };
         let badge = gtk::Label::builder()
-            .label(&unread.to_string()).halign(gtk::Align::End).build();
+            .label(&label).halign(gtk::Align::End).build();
         badge.add_css_class("unread-badge");
         hbox.append(&badge);
     }

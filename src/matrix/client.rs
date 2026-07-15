@@ -75,12 +75,20 @@ impl MatrixClient {
             .collect()
     }
 
-    pub fn start_sync(self, tx: mpsc::UnboundedSender<MatrixEvent>) {
+    pub fn start_sync(&self, tx: mpsc::UnboundedSender<MatrixEvent>) {
+        let inner = self.inner.clone();
         tokio::spawn(async move {
-            let user_id = self.inner.user_id().map(|u| u.to_string()).unwrap_or_default();
+            let user_id = inner.user_id().map(|u| u.to_string()).unwrap_or_default();
             let _ = tx.send(MatrixEvent::Connected { user_id });
 
-            self.inner.add_event_handler({
+            // Seed already-joined rooms so the sidebar populates after login.
+            for room in inner.joined_rooms() {
+                let room_id = room.room_id().to_string();
+                let room_name = room.name().unwrap_or_else(|| room_id.clone());
+                let _ = tx.send(MatrixEvent::RoomJoined { room_id, room_name });
+            }
+
+            inner.add_event_handler({
                 let tx2 = tx.clone();
                 move |ev: SyncRoomMessageEvent, room: Room| {
                     let tx3 = tx2.clone();
@@ -105,7 +113,7 @@ impl MatrixClient {
             });
 
             let settings = SyncSettings::default();
-            if let Err(e) = self.inner.sync(settings).await {
+            if let Err(e) = inner.sync(settings).await {
                 let _ = tx.send(MatrixEvent::SyncError(e.to_string()));
             }
             let _ = tx.send(MatrixEvent::Disconnected);

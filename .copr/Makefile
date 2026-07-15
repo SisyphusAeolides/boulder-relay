@@ -9,6 +9,7 @@ srpm:
 	tar \
 	    --exclude='.git' \
 	    --exclude='.copr' \
+	    --exclude='target' \
 	    --transform "s|^\./|boulderX-$(VERSION)/|" \
 	    -czf $(outdir)/$(ARCHIVE) \
 	    -C $(TOPDIR) .

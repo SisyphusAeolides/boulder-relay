@@ -43,7 +43,7 @@ pub struct ChatLine {
     pub style: chat_view::LineStyle,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum AppInput {
     // ── IRC ──────────────────────────────────────────────────────────
     UpdateNickname(String),
@@ -95,6 +95,7 @@ pub enum AppInput {
     MarkChannelRead(String),
     Quit,
     SaveSettings,
+    ComposerSendClicked,
     // ── Matrix ───────────────────────────────────────────────────────
     OpenMatrixLogin,
     OpenMatrixJoin,
@@ -106,10 +107,18 @@ pub enum AppInput {
     },
     ClearMatrixAccount,
     MatrixConnected { user_id: String },
+    MatrixStoreClient(MatrixClient),
     MatrixRoomJoined { room_id: String, room_name: String },
     MatrixRoomLeft { room_id: String },
     MatrixJoinRoom(String),
     MatrixSendMessage { room_id: String, body: String },
+}
+
+impl std::fmt::Debug for AppInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Opaque: AppInput carries non-Debug MatrixClient on one variant.
+        write!(f, "AppInput")
+    }
 }
 
 pub struct AppModel {
@@ -155,6 +164,7 @@ pub struct AppModel {
     pub channel_box: gtk::ListBox,
     pub user_box: gtk::ListBox,
     pub chat_view: gtk::TextView,
+    pub composer_entry: gtk::Entry,
     pub window: gtk::Window,
 }
 
@@ -291,7 +301,7 @@ impl AppModel {
             let is_fav = self.favorite_channels.contains(ch);
             let is_active = *ch == self.active_channel;
             let row = crate::ui::sidebar::build_room_row(
-                sender, ch, unread, is_active, Protocol::Irc, is_fav,
+                sender, ch, unread, self.mention_counts.get(ch).copied().unwrap_or(0), is_active, Protocol::Irc, is_fav,
             );
             self.channel_box.append(&row);
         }
@@ -301,10 +311,12 @@ impl AppModel {
             self.channel_box.append(&crate::ui::sidebar::section_header("Matrix"));
             for room in matrix_rooms {
                 let is_active = room.display_name == self.active_channel;
+                let mentions = self.mention_counts.get(&room.display_name).copied().unwrap_or(0);
                 let row = crate::ui::sidebar::build_room_row(
                     sender,
                     &room.display_name,
                     room.unread_count,
+                    mentions,
                     is_active,
                     Protocol::Matrix { room_id: room.room_id.to_string() },
                     false,
@@ -413,17 +425,57 @@ impl SimpleComponent for AppModel {
                         set_margin_all: 12,
                         add_css_class: "sidebar-header",
 
-                        gtk::Label {
-                            set_label: "Boulder Relay",
+                            gtk::Label {
+                            set_label: "boulderX",
                             set_hexpand: true,
                             set_halign: gtk::Align::Start,
                             add_css_class: "app-title",
                         },
                         gtk::Button {
                             set_label: "⚙",
-                            set_tooltip_text: Some("Preferences"),
+                            set_tooltip_text: Some("Preferences (Ctrl+,)"),
                             add_css_class: "flat",
                             connect_clicked => AppInput::OpenPreferences,
+                        },
+                    },
+
+                    // Welcome / empty-state when offline with no rooms yet
+                    gtk::Box {
+                        set_orientation: gtk::Orientation::Vertical,
+                        set_spacing: 8,
+                        set_margin_start: 12,
+                        set_margin_end: 12,
+                        set_margin_bottom: 8,
+                        add_css_class: "welcome-panel",
+                        #[watch]
+                        set_visible: model.connection == ConnectionState::Offline
+                            && !model.matrix_connected
+                            && model.channels.iter().all(|c| c == SERVER_TAB),
+
+                        gtk::Label {
+                            set_label: "Welcome to boulderX",
+                            set_halign: gtk::Align::Start,
+                            add_css_class: "welcome-title",
+                        },
+                        gtk::Label {
+                            set_label: "Connect IRC or sign in to Matrix to get started.",
+                            set_halign: gtk::Align::Start,
+                            set_wrap: true,
+                            add_css_class: "welcome-body",
+                        },
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Horizontal,
+                            set_spacing: 6,
+                            gtk::Button {
+                                set_label: "Connect IRC",
+                                add_css_class: "suggested-action",
+                                connect_clicked => AppInput::OpenIrcLogin,
+                            },
+                            gtk::Button {
+                                set_label: "Matrix sign-in",
+                                add_css_class: "suggested-action",
+                                connect_clicked => AppInput::OpenMatrixLogin,
+                            },
                         },
                     },
 
@@ -610,7 +662,7 @@ impl SimpleComponent for AppModel {
                             set_margin_bottom: 10,
                             add_css_class: "composer",
 
-                            gtk::Entry {
+                            #[local_ref] composer_entry_ref -> gtk::Entry {
                                 set_placeholder_text: Some("Message…  (/help for commands)"),
                                 set_hexpand: true,
                                 add_css_class: "composer-entry",
@@ -624,6 +676,9 @@ impl SimpleComponent for AppModel {
                                 set_tooltip_text: Some("Send"),
                                 add_css_class: "suggested-action",
                                 add_css_class: "composer-send",
+                                connect_clicked[sender] => move |_| {
+                                    sender.input(AppInput::ComposerSendClicked);
+                                },
                             },
                         },
                     },
@@ -674,6 +729,7 @@ impl SimpleComponent for AppModel {
         user_box.set_selection_mode(gtk::SelectionMode::None);
         let chat_view = gtk::TextView::new();
         chat_view::setup_tags(&chat_view);
+        let composer_entry = gtk::Entry::new();
         let mut chans = vec![server_tab.clone()];
         for extra in &settings.extra_channels {
             if !chans.contains(extra) { chans.push(extra.clone()); }
@@ -724,6 +780,7 @@ impl SimpleComponent for AppModel {
             channel_box: channel_box.clone(),
             user_box: user_box.clone(),
             chat_view: chat_view.clone(),
+            composer_entry: composer_entry.clone(),
             window: root.clone(),
         };
         let srv_init = model.server.clone();
@@ -731,11 +788,42 @@ impl SimpleComponent for AppModel {
         let channel_box_ref = &model.channel_box;
         let user_box_ref = &model.user_box;
         let chat_view_ref = &model.chat_view;
+        let composer_entry_ref = &model.composer_entry;
         let widgets = view_output!();
         let mut parts = ComponentParts { model, widgets };
         parts.model.show_channel_history();
         parts.model.refresh_channels(&sender);
         parts.model.refresh_users(&sender);
+
+        // Keyboard shortcuts
+        let win = parts.model.window.clone();
+        let app = relm4::main_application();
+        let s_prefs = sender.clone();
+        let act_prefs = gtk::gio::SimpleAction::new("preferences", None);
+        act_prefs.connect_activate(move |_, _| s_prefs.input(AppInput::OpenPreferences));
+        app.add_action(&act_prefs);
+        app.set_accels_for_action("app.preferences", &["<Control>comma"]);
+
+        let s_irc = sender.clone();
+        let act_irc = gtk::gio::SimpleAction::new("connect-irc", None);
+        act_irc.connect_activate(move |_, _| s_irc.input(AppInput::OpenIrcLogin));
+        app.add_action(&act_irc);
+        app.set_accels_for_action("app.connect-irc", &["<Control>n"]);
+
+        let s_mx = sender.clone();
+        let act_mx = gtk::gio::SimpleAction::new("connect-matrix", None);
+        act_mx.connect_activate(move |_, _| s_mx.input(AppInput::OpenMatrixLogin));
+        app.add_action(&act_mx);
+        app.set_accels_for_action("app.connect-matrix", &["<Control><Shift>n"]);
+
+        let act_activate = gtk::gio::SimpleAction::new("activate", None);
+        let win2 = win.clone();
+        act_activate.connect_activate(move |_, _| {
+            win2.set_visible(true);
+            win2.present();
+        });
+        app.add_action(&act_activate);
+
         parts
     }
 
@@ -746,6 +834,13 @@ impl SimpleComponent for AppModel {
             AppInput::UpdatePassword(pwd) => { self.password = pwd; let s = self.server.clone(); self.sync_account_for_server(&s); }
             AppInput::UpdateNotificationsEnabled(v) => { self.notifications_enabled = v; self.persist_settings(); }
             AppInput::UpdateBackgroundOnClose(v) => { self.background_on_close = v; self.persist_settings(); }
+            AppInput::ComposerSendClicked => {
+                let t = self.composer_entry.text().to_string();
+                if !t.is_empty() {
+                    self.composer_entry.set_text("");
+                    sender.input(AppInput::SendMessage(t));
+                }
+            }
             AppInput::UpdateChannelFilter(f) => { self.channel_filter = f; self.refresh_channels(&sender); }
             AppInput::MarkChannelRead(ch) => { self.unread_counts.remove(&ch); self.mention_counts.remove(&ch); }
             AppInput::IgnoreUser(nick) => {
@@ -832,19 +927,26 @@ impl SimpleComponent for AppModel {
             AppInput::OpenPreferences => {
                 let dialog = gtk::Window::builder()
                     .transient_for(&self.window).modal(true).title("Preferences")
-                    .default_width(400).default_height(300).build();
+                    .default_width(420).default_height(360).build();
                 dialog.add_css_class("boulder-relay");
                 let vbox = gtk::Box::new(gtk::Orientation::Vertical, 12);
                 vbox.set_margin_all(12);
                 let nick_check = gtk::CheckButton::builder().label("Enable nickname colors").active(self.nick_colors_enabled).build();
                 vbox.append(&nick_check);
+                let notif_check = gtk::CheckButton::builder().label("Desktop notifications").active(self.notifications_enabled).build();
+                vbox.append(&notif_check);
+                let bg_check = gtk::CheckButton::builder().label("Hide window on close (keep running)").active(self.background_on_close).build();
+                vbox.append(&bg_check);
                 vbox.append(&gtk::Label::new(Some("Timestamp format:")));
                 let ts_entry = gtk::Entry::builder().text(&self.timestamp_format).build();
                 vbox.append(&ts_entry);
                 let apply = gtk::Button::with_label("Apply");
                 let s = sender.clone(); let d = dialog.clone(); let nc = nick_check.clone(); let te = ts_entry.clone();
+                let nfc = notif_check.clone(); let bgc = bg_check.clone();
                 apply.connect_clicked(move |_| {
                     s.input(AppInput::UpdateNickColorsEnabled(nc.is_active()));
+                    s.input(AppInput::UpdateNotificationsEnabled(nfc.is_active()));
+                    s.input(AppInput::UpdateBackgroundOnClose(bgc.is_active()));
                     s.input(AppInput::UpdateTimestampFormat(te.text().to_string()));
                     d.close();
                 });
@@ -980,7 +1082,7 @@ impl SimpleComponent for AppModel {
             }
             AppInput::Quit => {
                 self.persist_settings();
-                if let Some(tx) = self.irc_sender.take() { let _ = tx.send_quit("Boulder Relay signing off"); }
+                if let Some(tx) = self.irc_sender.take() { let _ = tx.send_quit("boulderX signing off"); }
                 relm4::main_application().quit();
             }
             AppInput::SaveSettings => self.persist_settings(),
@@ -1005,7 +1107,7 @@ impl SimpleComponent for AppModel {
             AppInput::UserDisconnect => { self.user_disconnected = true; sender.input(AppInput::Disconnect); }
             AppInput::Disconnect => {
                 if let Some(tx) = self.irc_sender.take() {
-                    let _ = tx.send_quit("Boulder Relay signing off");
+                    let _ = tx.send_quit("boulderX signing off");
                     self.connection = ConnectionState::Offline;
                     self.status = String::from("Offline");
                     self.channel_list_results.clear();
@@ -1320,6 +1422,8 @@ impl SimpleComponent for AppModel {
                                         .unwrap_or_else(|| username.clone());
                                     let (tx, rx) = mpsc::unbounded_channel::<MatrixEvent>();
                                     bridge_matrix_events(rx, s.clone());
+                                    // Keep a clone for join/send; sync task uses another clone.
+                                    s.input(AppInput::MatrixStoreClient(client.clone()));
                                     client.start_sync(tx);
                                     s.input(AppInput::MatrixConnected { user_id });
                                 }
@@ -1333,6 +1437,9 @@ impl SimpleComponent for AppModel {
                         ))),
                     }
                 });
+            }
+            AppInput::MatrixStoreClient(client) => {
+                self.matrix_client = Some(client);
             }
             AppInput::MatrixConnected { user_id } => {
                 self.matrix_user_id = Some(user_id.clone());

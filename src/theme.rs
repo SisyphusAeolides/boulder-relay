@@ -4,7 +4,7 @@ use adw::prelude::*;
 use adw;
 
 const CSS: &str = r#"
-/* Boulder Relay — Element X-inspired theme: Gruvbox dark + Sisyphus Blue */
+/* boulderX — Element X-inspired theme: Gruvbox dark + Sisyphus Blue */
 
 .boulder-relay { background-color: #1d2021; color: #ebdbb2; font-family: "Inter", "Cantarell", sans-serif; font-size: 14px; }
 
@@ -47,9 +47,14 @@ const CSS: &str = r#"
 .status-connecting { color: #fabd2f; font-size: 12px; font-weight: 600; }
 .status-offline { color: #928374; font-size: 12px; }
 
-.fav-btn, .part-btn { background: transparent; border: none; color: #928374; font-size: 13px; padding: 1px 4px; border-radius: 4px; min-width: 0; }
-.fav-btn:hover { color: #fabd2f; }
-.part-btn:hover { color: #fb4934; }
+.welcome-panel { background-color: #32302f; border: 1px solid #504945; border-radius: 10px; padding: 12px; }
+.welcome-title { font-size: 15px; font-weight: 700; color: #ebdbb2; }
+.welcome-body { font-size: 12.5px; color: #a89984; }
+
+.fav-btn, .part-btn { background: transparent; border: none; color: #928374; font-size: 13px; padding: 1px 4px; border-radius: 4px; min-width: 0; opacity: 0.35; }
+.room-row:hover .fav-btn, .room-row:hover .part-btn { opacity: 1; }
+.fav-btn:hover { color: #fabd2f; opacity: 1; }
+.part-btn:hover { color: #fb4934; opacity: 1; }
 
 .suggested-action { background-color: #458588; color: #1d2021; border-radius: 6px; font-weight: 600; }
 .suggested-action:hover { background-color: #83a598; }

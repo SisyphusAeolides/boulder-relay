@@ -1,5 +1,5 @@
 Name:           boulderX
-Version:        0.6.1
+Version:        0.6.2
 Release:        1%{?dist}
 Summary:        GTK4 + libadwaita IRC/Matrix client in Rust — Element X-style UI
 
@@ -58,6 +58,11 @@ appstream-util validate-relax --nonet packaging/org.Sisyphus.BoulderX.metainfo.x
 %{_metainfodir}/org.Sisyphus.BoulderX.metainfo.xml
 
 %changelog
+* Wed Jul 15 2026 Kenny Glowner <sisyphuscode@fedoraproject.org> - 0.6.2-1
+- Fix Matrix session: keep client for join/send; seed joined rooms on sync
+- Wire send button; welcome panel; prefs for notifications/background
+- Branding: boulderX APP_ID; shortcuts Ctrl+, / Ctrl+N; denser room chrome
+
 * Tue Jul 14 2026 Kenny Glowner <sisyphuscode@fedoraproject.org> - 0.6.1-1
 - IRC login dialog and Accounts manager for IRC + Matrix
 - Persist Matrix credentials optionally; Register/Verify NickServ flows

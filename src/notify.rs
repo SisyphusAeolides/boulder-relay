@@ -1,10 +1,10 @@
 use gtk::gio::{Notification, ThemedIcon};
 use gtk::prelude::ApplicationExt;
 
-pub const APP_ID: &str = "org.Sisyphus.BoulderRelay";
+pub const APP_ID: &str = "org.Sisyphus.BoulderX";
 
 pub fn setup_application_icon() {
-    gtk::Window::set_default_icon_name("boulder-relay");
+    gtk::Window::set_default_icon_name("boulderX");
 }
 
 /// Truncate a string to at most `max_chars` Unicode scalar values.
@@ -55,7 +55,7 @@ pub fn send_message_notification(
 
     let notification = Notification::new(&title);
     notification.set_body(Some(&format!("{user}: {preview}")));
-    notification.set_icon(&ThemedIcon::new("boulder-relay"));
+    notification.set_icon(&ThemedIcon::new("boulderX"));
     notification.set_default_action("app.activate");
 
     // Priority: urgent for DM/mention, normal otherwise
@@ -67,7 +67,7 @@ pub fn send_message_notification(
     });
 
     let id = format!(
-        "boulder-relay-{}-{}",
+        "boulderX-{}-{}",
         channel.chars().filter(|c| c.is_alphanumeric()).collect::<String>(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

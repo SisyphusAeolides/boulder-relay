@@ -1,13 +1,15 @@
 use tokio::sync::mpsc;
 use relm4::ComponentSender;
 use crate::app::{AppInput, AppModel, Protocol};
+use crate::runtime;
 use super::client::MatrixEvent;
 
 pub fn bridge_matrix_events(
     mut rx: mpsc::UnboundedReceiver<MatrixEvent>,
     sender: ComponentSender<AppModel>,
 ) {
-    tokio::spawn(async move {
+    // Must run on the shared runtime (not bare tokio::spawn from GTK).
+    runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             match event {
                 MatrixEvent::Connected { user_id } => {

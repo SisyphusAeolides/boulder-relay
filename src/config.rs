@@ -72,6 +72,12 @@ pub struct Settings {
     pub nickname: String,
     pub server: String,
     pub password: String,
+    /// IRC server port (default 6697 for TLS).
+    #[serde(default = "default_irc_port")]
+    pub irc_port: u16,
+    /// Whether to use TLS for IRC (default true).
+    #[serde(default = "default_irc_tls")]
+    pub irc_use_tls: bool,
     pub favorites: Vec<String>,
     pub extra_channels: Vec<String>,
     pub last_channel: String,
@@ -81,9 +87,18 @@ pub struct Settings {
     pub timestamp_format: String,
     pub account_service: String,
     pub auth_method: String,
+    #[serde(default)]
     pub accounts: HashMap<String, ServerAccount>,
     #[serde(default)]
     pub matrix: MatrixAccount,
+}
+
+fn default_irc_port() -> u16 {
+    6697
+}
+
+fn default_irc_tls() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -92,6 +107,8 @@ impl Default for Settings {
             nickname: String::new(),
             server: String::from("irc.libera.chat"),
             password: String::new(),
+            irc_port: default_irc_port(),
+            irc_use_tls: default_irc_tls(),
             favorites: vec![String::from("Server")],
             extra_channels: Vec::new(),
             last_channel: String::from("Server"),
@@ -138,7 +155,8 @@ impl Settings {
     }
 }
 
-fn config_path() -> PathBuf {
+/// Public for tests and diagnostics.
+pub fn config_path() -> PathBuf {
     let base = std::env::var("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -158,12 +176,16 @@ mod tests {
         let settings = Settings {
             nickname: String::from("testnick"),
             server: String::from("irc.libera.chat"),
+            irc_port: 6667,
+            irc_use_tls: false,
             ..Settings::default()
         };
         let serialized = toml::to_string_pretty(&settings).unwrap();
         let parsed: Settings = toml::from_str(&serialized).unwrap();
         assert_eq!(parsed.nickname, "testnick");
         assert_eq!(parsed.server, "irc.libera.chat");
+        assert_eq!(parsed.irc_port, 6667);
+        assert!(!parsed.irc_use_tls);
     }
 
     #[test]
@@ -173,5 +195,35 @@ mod tests {
         assert!(s.notifications_enabled);
         assert!(s.nick_colors_enabled);
         assert_eq!(s.timestamp_format, "%H:%M");
+        assert_eq!(s.irc_port, 6697);
+        assert!(s.irc_use_tls);
+    }
+
+    #[test]
+    fn config_path_uses_xdg_config_home() {
+        // Structural: path ends with boulder-relay/settings.toml
+        let p = config_path();
+        assert!(p.ends_with("boulder-relay/settings.toml") || p.ends_with("boulder-relay\\settings.toml"));
+    }
+
+    #[test]
+    fn missing_port_fields_default_on_parse() {
+        let toml = r#"
+nickname = "n"
+server = "irc.example"
+password = ""
+favorites = []
+extra_channels = []
+last_channel = "Server"
+notifications_enabled = true
+background_on_close = true
+nick_colors_enabled = true
+timestamp_format = "%H:%M"
+account_service = "NickServ"
+auth_method = "nickserv"
+"#;
+        let s: Settings = toml::from_str(toml).unwrap();
+        assert_eq!(s.irc_port, 6697);
+        assert!(s.irc_use_tls);
     }
 }

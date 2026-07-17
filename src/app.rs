@@ -1,10 +1,12 @@
 use crate::channels;
 use crate::config::Settings;
+use crate::irc::commands::{self, SlashCommand};
 use crate::irc::connection::IrcConnection;
 use crate::matrix::client::{MatrixClient, MatrixEvent};
 use crate::matrix::rooms::RoomRegistry;
 use crate::matrix::sync::bridge_matrix_events;
 use crate::notify::{self, NotifyKind};
+use crate::runtime;
 use crate::theme;
 use crate::ui::{chat_view, dialogs};
 use adw::prelude::*;
@@ -143,6 +145,8 @@ pub struct AppModel {
     pub nickname: String,
     pub server: String,
     pub password: String,
+    pub irc_port: u16,
+    pub irc_use_tls: bool,
     pub notifications_enabled: bool,
     pub background_on_close: bool,
     pub channel_filter: String,
@@ -188,6 +192,8 @@ impl AppModel {
             nickname: self.nickname.clone(),
             server: self.server.clone(),
             password: self.password.clone(),
+            irc_port: self.irc_port,
+            irc_use_tls: self.irc_use_tls,
             favorites: self.favorite_channels.clone(),
             extra_channels: self.extra_channels(),
             last_channel: self.active_channel.clone(),
@@ -264,6 +270,60 @@ impl AppModel {
         history.push(ChatLine { timestamp: ts.clone(), user: user.to_string(), body: body.to_string(), style });
         if self.active_channel == channel {
             chat_view::append_bubble(&self.chat_view, &ts, user, body, style, self.nick_colors_enabled);
+        }
+    }
+
+    /// Send plain text to the active IRC channel or Matrix room (fail-closed on error).
+    fn send_plain_message(&mut self, sender: &ComponentSender<Self>, text: &str) {
+        if self.active_channel == SERVER_TAB {
+            self.append_message(SERVER_TAB, "System", "Select a channel first.", chat_view::LineStyle::System);
+            return;
+        }
+        // Matrix room send
+        if let Some(matrix_room_id) = self
+            .matrix_rooms
+            .find_by_display_name(&self.active_channel)
+            .map(|r| r.room_id.clone())
+        {
+            let body = text.to_string();
+            let nick = self
+                .matrix_user_id
+                .clone()
+                .unwrap_or_else(|| self.nickname.clone());
+            let client = self.matrix_client.clone();
+            let rid = matrix_room_id.clone();
+            let ch = self.active_channel.clone();
+            let s = sender.clone();
+            self.append_message(&ch, &nick, &body, chat_view::LineStyle::SelfMsg);
+            runtime::spawn(async move {
+                if let Some(c) = client {
+                    if let Err(e) = c.send_message(&rid, &body).await {
+                        s.input(AppInput::ReceiveServerMessage(format!(
+                            "[Matrix send failed]: {e}"
+                        )));
+                    }
+                } else {
+                    s.input(AppInput::ReceiveServerMessage(
+                        "[Matrix]: not connected.".into(),
+                    ));
+                }
+            });
+            return;
+        }
+        // IRC send
+        if let Some(tx) = self.irc_sender.clone() {
+            if tx.send_privmsg(&self.active_channel, text).is_ok() {
+                let ch = self.active_channel.clone();
+                let nick = self.nickname.clone();
+                self.append_message(&ch, &nick, text, chat_view::LineStyle::SelfMsg);
+            }
+        } else {
+            self.append_message(
+                &self.active_channel.clone(),
+                "System",
+                "Cannot send: not connected.",
+                chat_view::LineStyle::System,
+            );
         }
     }
 
@@ -761,6 +821,8 @@ impl SimpleComponent for AppModel {
             nickname: if settings.nickname.is_empty() { DEFAULT_NICKNAME.to_string() } else { settings.nickname },
             server: if settings.server.is_empty() { DEFAULT_SERVER.to_string() } else { settings.server },
             password: settings.password,
+            irc_port: if settings.irc_port == 0 { DEFAULT_PORT } else { settings.irc_port },
+            irc_use_tls: settings.irc_use_tls,
             notifications_enabled: settings.notifications_enabled,
             background_on_close: settings.background_on_close,
             channel_filter: String::new(),
@@ -1102,6 +1164,8 @@ impl SimpleComponent for AppModel {
                     self.password.clone(),
                     self.auth_method.clone(),
                     channels_to_join,
+                    self.irc_port,
+                    self.irc_use_tls,
                 );
             }
             AppInput::UserDisconnect => { self.user_disconnected = true; sender.input(AppInput::Disconnect); }
@@ -1148,6 +1212,7 @@ impl SimpleComponent for AppModel {
                 self.active_channel = ch.clone();
                 self.unread_counts.remove(&ch);
                 self.mention_counts.remove(&ch);
+                self.matrix_rooms.clear_unread_by_display_name(&ch);
                 self.show_channel_history();
                 self.refresh_users(&sender);
                 self.persist_settings();
@@ -1223,6 +1288,13 @@ impl SimpleComponent for AppModel {
                         self.refresh_channels(&sender);
                     }
                 }
+                // Ensure Matrix rooms have a history slot under the display name.
+                if let Protocol::Matrix { ref room_id } = protocol {
+                    self.chat_histories.entry(channel.clone()).or_insert_with(Vec::new);
+                    if self.matrix_rooms.get(room_id).is_none() {
+                        self.matrix_rooms.insert(room_id.clone(), channel.clone());
+                    }
+                }
                 let style = self.message_style(&user, &body);
                 self.append_message(&channel, &user, &body, style);
                 if channel != self.active_channel {
@@ -1230,6 +1302,10 @@ impl SimpleComponent for AppModel {
                     if style == chat_view::LineStyle::Mention {
                         *self.mention_counts.entry(channel.clone()).or_insert(0) += 1;
                     }
+                    if let Protocol::Matrix { ref room_id } = protocol {
+                        self.matrix_rooms.increment_unread(room_id);
+                    }
+                    self.refresh_channels(&sender);
                 }
                 if self.should_notify(&channel, &user, style) {
                     let kind = self.notify_kind(&channel, style);
@@ -1262,110 +1338,105 @@ impl SimpleComponent for AppModel {
                 let text = text.trim();
                 if text.is_empty() { return; }
                 if text.starts_with('/') { sender.input(AppInput::SendMessage(text.to_string())); return; }
-                if text.contains(',') {
-                    for target in channels::parse_join_command_multi(text) { sender.input(AppInput::JoinChannel(target)); }
-                    return;
-                }
+                // Use parse_join_entry so multi-join preserves DMs vs channels.
                 match channels::parse_join_entry(text) {
                     Some(channels::JoinTarget::Channel(ch)) => sender.input(AppInput::JoinChannel(ch)),
                     Some(channels::JoinTarget::DirectMessage(nick)) => sender.input(AppInput::JoinChannel(nick)),
-                    _ => {}
+                    Some(channels::JoinTarget::Multi(targets)) => {
+                        for t in targets {
+                            match t {
+                                channels::JoinTarget::Channel(ch) => sender.input(AppInput::JoinChannel(ch)),
+                                channels::JoinTarget::DirectMessage(nick) => sender.input(AppInput::JoinChannel(nick)),
+                                channels::JoinTarget::Multi(_) => {}
+                            }
+                        }
+                    }
+                    None => {}
                 }
             }
             AppInput::SendMessage(text) => {
                 let text = text.trim();
                 if text.is_empty() { return; }
-                if text.starts_with('/') {
-                    let mut parts_iter = text.splitn(3, ' ');
-                    match parts_iter.next().unwrap_or("") {
-                        "/join" | "/j" => {
-                            if let Some(raw) = parts_iter.next() {
-                                for ch in channels::parse_join_command_multi(raw) { sender.input(AppInput::JoinChannel(ch)); }
-                            }
-                        }
-                        "/msg" | "/query" => {
-                            if let (Some(target), Some(body)) = (parts_iter.next(), parts_iter.next()) {
-                                if let Some(tx) = &self.irc_sender {
-                                    let _ = tx.send_privmsg(target, body);
-                                    let nick = self.nickname.clone();
-                                    self.append_message(target, &nick, body, chat_view::LineStyle::SelfMsg);
-                                }
-                            }
-                        }
-                        "/nick" => {
-                            if let Some(nick) = parts_iter.next() {
-                                if let Some(tx) = &self.irc_sender { let _ = tx.send(irc::client::prelude::Message::from(format!("NICK {}", nick).as_str())); }
-                                self.nickname = nick.to_string();
-                                self.persist_settings();
-                            }
-                        }
-                        "/part" => {
-                            let target = parts_iter.next().map(str::to_string).unwrap_or_else(|| self.active_channel.clone());
-                            sender.input(AppInput::PartChannel(target));
-                        }
-                        "/clear" => sender.input(AppInput::ClearChannel(self.active_channel.clone())),
-                        "/help" => {
-                            let ch = self.active_channel.clone();
-                            self.append_message(&ch, "System", "Commands: /join /part /msg /me /nick /whois /away /back /topic /ignore /unignore /clear /help", chat_view::LineStyle::System);
-                        }
-                        "/me" => {
-                            if let Some(action) = parts_iter.next() {
-                                let full = format!("\x01ACTION {}\x01", action);
-                                if let Some(tx) = &self.irc_sender { let _ = tx.send_privmsg(&self.active_channel, &full); }
-                                let me = format!("* {}", self.nickname);
-                                let ch = self.active_channel.clone();
-                                self.append_message(&ch, &me, action, chat_view::LineStyle::SelfMsg);
-                            }
-                        }
-                        "/list" => sender.input(AppInput::BrowseChannels),
-                        "/whois" => { if let Some(t) = parts_iter.next() { if let Some(tx) = &self.irc_sender { let _ = tx.send(irc::client::prelude::Message::from(format!("WHOIS {}", t).as_str())); } } }
-                        "/away" => { let m = parts_iter.next().unwrap_or("Away"); if let Some(tx) = &self.irc_sender { let _ = tx.send(irc::client::prelude::Message::from(format!("AWAY :{}", m).as_str())); } }
-                        "/back" => { if let Some(tx) = &self.irc_sender { let _ = tx.send(irc::client::prelude::Message::from("AWAY")); } }
-                        "/topic" => {
-                            let new_t = parts_iter.next().unwrap_or("");
-                            let ch = self.active_channel.clone();
-                            if let Some(tx) = &self.irc_sender {
-                                if new_t.is_empty() { let _ = tx.send(irc::client::prelude::Message::from(format!("TOPIC {}", ch).as_str())); }
-                                else { let _ = tx.send(irc::client::prelude::Message::from(format!("TOPIC {} :{}", ch, new_t).as_str())); }
-                            }
-                        }
-                        "/ignore" => { if let Some(t) = parts_iter.next() { sender.input(AppInput::IgnoreUser(t.to_string())); } }
-                        "/unignore" => { if let Some(t) = parts_iter.next() { sender.input(AppInput::UnignoreUser(t.to_string())); } }
-                        _ => {}
+                match commands::parse_slash_command(text) {
+                    SlashCommand::Plain(body) => {
+                        if body.is_empty() { return; }
+                        self.send_plain_message(&sender, &body);
                     }
-                    return;
-                }
-                if self.active_channel == SERVER_TAB {
-                    self.append_message(SERVER_TAB, "System", "Select a channel first.", chat_view::LineStyle::System);
-                    return;
-                }
-                // Matrix room send
-                if let Some(matrix_room_id) = self.matrix_rooms.all().iter()
-                    .find(|r| r.display_name == self.active_channel)
-                    .map(|r| r.room_id.clone())
-                {
-                    let body = text.to_string();
-                    let nick = self.matrix_user_id.clone().unwrap_or_else(|| self.nickname.clone());
-                    let client = self.matrix_client.clone();
-                    let rid = matrix_room_id.clone();
-                    let ch = self.active_channel.clone();
-                    self.append_message(&ch, &nick, &body, chat_view::LineStyle::SelfMsg);
-                    tokio::spawn(async move {
-                        if let Some(c) = client {
-                            let _ = c.send_message(&rid, &body).await;
+                    SlashCommand::Join { channels: chans } => {
+                        for ch in chans { sender.input(AppInput::JoinChannel(ch)); }
+                    }
+                    SlashCommand::Part { target } => {
+                        let target = target.unwrap_or_else(|| self.active_channel.clone());
+                        sender.input(AppInput::PartChannel(target));
+                    }
+                    SlashCommand::Msg { target, body } => {
+                        if let Some(tx) = &self.irc_sender {
+                            let _ = tx.send_privmsg(&target, &body);
+                            if !self.channels.contains(&target) {
+                                sender.input(AppInput::JoinChannel(target.clone()));
+                            }
+                            let nick = self.nickname.clone();
+                            self.append_message(&target, &nick, &body, chat_view::LineStyle::SelfMsg);
+                            self.active_channel = target;
+                            self.show_channel_history();
+                        } else {
+                            self.append_message(SERVER_TAB, "System", "Cannot /msg: not connected to IRC.", chat_view::LineStyle::System);
                         }
-                    });
-                    return;
-                }
-                // IRC send
-                if let Some(tx) = self.irc_sender.clone() {
-                    if tx.send_privmsg(&self.active_channel, text).is_ok() {
+                    }
+                    SlashCommand::Nick { nick } => {
+                        if let Some(tx) = &self.irc_sender {
+                            let _ = tx.send(irc::client::prelude::Message::from(format!("NICK {}", nick).as_str()));
+                        }
+                        self.nickname = nick;
+                        self.persist_settings();
+                    }
+                    SlashCommand::Me { action } => {
+                        let full = format!("\x01ACTION {}\x01", action);
+                        if let Some(tx) = &self.irc_sender {
+                            let _ = tx.send_privmsg(&self.active_channel, &full);
+                            let me = format!("* {}", self.nickname);
+                            let ch = self.active_channel.clone();
+                            self.append_message(&ch, &me, &action, chat_view::LineStyle::SelfMsg);
+                        } else {
+                            self.append_message(SERVER_TAB, "System", "Cannot /me: not connected.", chat_view::LineStyle::System);
+                        }
+                    }
+                    SlashCommand::Whois { nick } => {
+                        if let Some(tx) = &self.irc_sender {
+                            let _ = tx.send(irc::client::prelude::Message::from(format!("WHOIS {}", nick).as_str()));
+                        }
+                    }
+                    SlashCommand::Away { message } => {
+                        if let Some(tx) = &self.irc_sender {
+                            let _ = tx.send(irc::client::prelude::Message::from(format!("AWAY :{}", message).as_str()));
+                        }
+                    }
+                    SlashCommand::Back => {
+                        if let Some(tx) = &self.irc_sender {
+                            let _ = tx.send(irc::client::prelude::Message::from("AWAY"));
+                        }
+                    }
+                    SlashCommand::Topic { text } => {
                         let ch = self.active_channel.clone();
-                        let nick = self.nickname.clone();
-                        self.append_message(&ch, &nick, text, chat_view::LineStyle::SelfMsg);
+                        if let Some(tx) = &self.irc_sender {
+                            match text {
+                                None => { let _ = tx.send(irc::client::prelude::Message::from(format!("TOPIC {}", ch).as_str())); }
+                                Some(t) => { let _ = tx.send(irc::client::prelude::Message::from(format!("TOPIC {} :{}", ch, t).as_str())); }
+                            }
+                        }
                     }
-                } else {
-                    self.append_message(&self.active_channel.clone(), "System", "Cannot send: not connected.", chat_view::LineStyle::System);
+                    SlashCommand::Ignore { nick } => sender.input(AppInput::IgnoreUser(nick)),
+                    SlashCommand::Unignore { nick } => sender.input(AppInput::UnignoreUser(nick)),
+                    SlashCommand::Clear => sender.input(AppInput::ClearChannel(self.active_channel.clone())),
+                    SlashCommand::List => sender.input(AppInput::BrowseChannels),
+                    SlashCommand::Help => {
+                        let ch = self.active_channel.clone();
+                        self.append_message(&ch, "System", "Commands: /join /part /msg /me /nick /whois /away /back /topic /ignore /unignore /clear /list /help", chat_view::LineStyle::System);
+                    }
+                    SlashCommand::Unknown { name } => {
+                        let ch = self.active_channel.clone();
+                        self.append_message(&ch, "System", &format!("Unknown command: /{name}. Type /help."), chat_view::LineStyle::System);
+                    }
                 }
             }
             // ── Matrix handlers ──────────────────────────────────────
@@ -1411,7 +1482,7 @@ impl SimpleComponent for AppModel {
                     chat_view::LineStyle::System,
                 );
                 let s = sender.clone();
-                tokio::spawn(async move {
+                runtime::spawn(async move {
                     match MatrixClient::new(&homeserver).await {
                         Ok(client) => {
                             match client.login_password(&username, &password).await {
@@ -1422,7 +1493,6 @@ impl SimpleComponent for AppModel {
                                         .unwrap_or_else(|| username.clone());
                                     let (tx, rx) = mpsc::unbounded_channel::<MatrixEvent>();
                                     bridge_matrix_events(rx, s.clone());
-                                    // Keep a clone for join/send; sync task uses another clone.
                                     s.input(AppInput::MatrixStoreClient(client.clone()));
                                     client.start_sync(tx);
                                     s.input(AppInput::MatrixConnected { user_id });
@@ -1453,6 +1523,19 @@ impl SimpleComponent for AppModel {
                 self.refresh_channels(&sender);
             }
             AppInput::MatrixRoomLeft { room_id } => {
+                // Best-effort server leave; always drop local state.
+                if let Ok(rid) = room_id.parse::<matrix_sdk::ruma::OwnedRoomId>() {
+                    if let Some(c) = self.matrix_client.clone() {
+                        let s = sender.clone();
+                        runtime::spawn(async move {
+                            if let Err(e) = c.leave_room(&rid).await {
+                                s.input(AppInput::ReceiveServerMessage(format!(
+                                    "[Matrix leave]: {e}"
+                                )));
+                            }
+                        });
+                    }
+                }
                 self.matrix_rooms.remove(&room_id);
                 self.refresh_channels(&sender);
             }
@@ -1464,7 +1547,7 @@ impl SimpleComponent for AppModel {
                 self.append_message(SERVER_TAB, "System", &format!("Joining Matrix room {}…", alias), chat_view::LineStyle::System);
                 let client = self.matrix_client.clone();
                 let s = sender.clone();
-                tokio::spawn(async move {
+                runtime::spawn(async move {
                     if let Some(c) = client {
                         if let Ok(id) = alias.parse::<matrix_sdk::ruma::OwnedRoomOrAliasId>() {
                             match c.inner.join_room_by_id_or_alias(&id, &[]).await {
@@ -1475,15 +1558,30 @@ impl SimpleComponent for AppModel {
                                 }
                                 Err(e) => s.input(AppInput::ReceiveServerMessage(format!("[Matrix]: Failed to join: {e}"))),
                             }
+                        } else {
+                            s.input(AppInput::ReceiveServerMessage(format!(
+                                "[Matrix]: invalid room id or alias: {alias}"
+                            )));
                         }
+                    } else {
+                        s.input(AppInput::ReceiveServerMessage(
+                            "[Matrix]: not connected — sign in first.".into(),
+                        ));
                     }
                 });
             }
             AppInput::MatrixSendMessage { room_id, body } => {
                 if let Ok(rid) = room_id.parse::<matrix_sdk::ruma::OwnedRoomId>() {
                     let client = self.matrix_client.clone();
-                    tokio::spawn(async move {
-                        if let Some(c) = client { let _ = c.send_message(&rid, &body).await; }
+                    let s = sender.clone();
+                    runtime::spawn(async move {
+                        if let Some(c) = client {
+                            if let Err(e) = c.send_message(&rid, &body).await {
+                                s.input(AppInput::ReceiveServerMessage(format!(
+                                    "[Matrix send failed]: {e}"
+                                )));
+                            }
+                        }
                     });
                 }
             }

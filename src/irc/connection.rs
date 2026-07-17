@@ -16,6 +16,8 @@ impl IrcConnection {
         pwd: String,
         auth_method: String,
         channels_to_join: Vec<String>,
+        port: u16,
+        use_tls: bool,
     ) {
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("Tokio runtime");
@@ -24,12 +26,13 @@ impl IrcConnection {
                 let is_sasl_external = auth_method == "sasl_external";
                 let is_sasl = is_sasl_plain || is_sasl_external;
                 let needs_nickserv = !pwd.is_empty() && !is_sasl;
+                let port = if port == 0 { DEFAULT_PORT } else { port };
                 let config = Config {
                     nickname: Some(nickname.clone()),
                     server: Some(server_addr),
                     channels: vec![],
-                    port: Some(DEFAULT_PORT),
-                    use_tls: Some(true),
+                    port: Some(port),
+                    use_tls: Some(use_tls),
                     nick_password: if needs_nickserv { Some(pwd.clone()) } else { None },
                     ..Config::default()
                 };
@@ -56,7 +59,12 @@ impl IrcConnection {
                 let mut channels_joined = false;
                 let mut stream = match client.stream() {
                     Ok(s) => s,
-                    Err(_) => return,
+                    Err(e) => {
+                        sender.input(AppInput::NetworkStatus(format!(
+                            "Connection failed: stream error: {e}"
+                        )));
+                        return;
+                    }
                 };
                 while let Some(result) = stream.next().await {
                     let message = match result {
@@ -109,7 +117,12 @@ impl IrcConnection {
                         }
                         Command::NOTICE(_, body) => {
                             sender.input(AppInput::ReceiveServerMessage(format!("[Notice]: {body}")));
-                            if needs_nickserv && !channels_joined && body.contains("You are now identified") {
+                            // NickServ wording varies by network — match common success phrases.
+                            let identified = body.contains("You are now identified")
+                                || body.contains("Password accepted")
+                                || body.contains("you are now recognized")
+                                || body.to_ascii_lowercase().contains("successfully identified");
+                            if needs_nickserv && !channels_joined && identified {
                                 channels_joined = true;
                                 join_channels(&irc_tx);
                             }
@@ -146,9 +159,13 @@ impl IrcConnection {
                                         channels_joined = true;
                                         join_channels(&irc_tx);
                                     }
-                                    Response::RPL_ENDOFMOTD | Response::ERR_NOMOTD if !needs_nickserv => {
-                                        channels_joined = true;
-                                        join_channels(&irc_tx);
+                                    // Join after MOTD so networks with unusual NickServ wording
+                                    // still get saved channels (may re-join after identify).
+                                    Response::RPL_ENDOFMOTD | Response::ERR_NOMOTD => {
+                                        if !channels_joined {
+                                            channels_joined = true;
+                                            join_channels(&irc_tx);
+                                        }
                                     }
                                     _ => {}
                                 }

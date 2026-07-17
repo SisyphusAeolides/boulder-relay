@@ -4,6 +4,7 @@ mod config;
 mod irc;
 mod matrix;
 mod notify;
+mod runtime;
 mod theme;
 mod ui;
 
@@ -15,6 +16,9 @@ use gtk::prelude::ApplicationExt;
 use app::AppModel;
 
 fn main() {
+    // Install the async runtime before any Matrix work from the UI thread.
+    let _ = runtime::handle();
+
     gtk::init().expect("Failed to initialize GTK");
     let application = adw::Application::new(Some(notify::APP_ID), Default::default());
     application.connect_startup(|_| {

@@ -1,137 +1,75 @@
 # boulderX
 
-A fast, clean GTK4 + libadwaita IRC/Matrix client written in **100% Rust** using [relm4](https://relm4.org/).
+GTK4 + libadwaita IRC/Matrix client in Rust (relm4).
 
-Named for the Sisyphus myth — the conversation you keep pushing uphill.
+**v0.6.2** — dual protocol sidebar, slash commands, Gruvbox theme, Sisyphus Blue accents.
 
-**v0.6.0** — unified IRC + Matrix support, Gruvbox dark theme, and Sisyphus Blue accents.
+## Status (honest)
 
----
+| Path | Works today |
+|------|-------------|
+| IRC connect (TLS 6697 default) | Yes — configurable port/TLS in settings |
+| IRC join / send / receive | Yes |
+| Slash commands | Yes — `/join /part /msg /me /nick /whois /away /back /topic /ignore /unignore /clear /list /help`; unknown commands show an error |
+| Settings persist | Yes — `~/.config/boulder-relay/settings.toml` (mode `0600`) |
+| Matrix login / sync / send / join | Yes — uses a process-wide Tokio runtime (no bare spawn from GTK) |
+| Matrix store | Yes — `~/.local/share/boulderX/matrix` (XDG data, not CWD) |
+| Matrix unread badges | Yes — room registry unread counters |
+| Matrix leave | Best-effort server leave + local remove |
+| Multi-server concurrent IRC | **Deferred** — maps exist; no full UI switcher yet |
+| SASL EXTERNAL (client cert) | **Deferred** — PLAIN/NickServ work; EXTERNAL needs cert wiring |
+| SSO Matrix login UI | **Deferred** — password login only |
 
-## Features
+Not a full Element/HexChat clone. No voice, no full IRCv3 cap suite, no CI against public homeservers as a hard gate.
 
-- **Dual-protocol**: IRC and Matrix side-by-side in a single unified sidebar with protocol badges
-- **X-style UI**: room avatars, unread count pills, rounded composer, bubble chat view
-- **Multi-server IRC**: concurrent connections, per-server channels, history, accounts, and state
-- **TLS IRC** (port 6697 default), configurable port/plain fallback
-- **Modern IRC auth**: NickServ, SASL PLAIN, SASL EXTERNAL (client cert), configurable per server
-- **Matrix login**: password or SSO token, E2E encryption via `matrix-sdk`, SQLite store
-- **Account management**: Register, Verify, change password, ghost nick — all in-app
-- Multi-channel + DM support with native GtkListBox (keyboard nav, hover, selection)
-- **Per-nickname coloring** (toggleable, Gruvbox palette)
-- Channel topics, per-channel highlights, `/ignore`, mute per user
-- Persistent per-server accounts and settings (TOML)
-- Auto-reconnect, configurable timestamps, auto-scroll
-- Full slash command set: `/join`, `/part`, `/msg`, `/me`, `/nick`, `/whois`, `/away`, `/back`, `/topic`, `/ignore`, `/unignore`, `/clear`, `/list`, `/help`
-- **Channel discovery**: sidebar filter + Browse dialog with search, user counts, topics
-- **Preferences**: nick colors, timestamp format, auth method
-- **Log viewer**: built-in full-text search across history
-- Background/tray mode on window close
-- Desktop notifications (libnotify)
-- GPLv2+ — fully free and open source
-
----
-
-## Quick Start
-
-1. Click **Accounts** (or **IRC**) and set nick + optional NickServ/SASL password + server.
-2. Click **Connect IRC** / **Connect** — TLS to port 6697 by default.
-3. Type `#channel` or nick in the join box and press Enter, or use `/join #chan`.
-4. Click **MX** (or Accounts → Matrix) to sign in — homeserver + credentials.
-5. Use **Register…** / **Verify…** in Accounts for NickServ registration flows.
-
-All joined channels, Matrix rooms, favorites, and saved accounts persist between sessions
-(`~/.config/boulder-relay/settings.toml`, mode `0600`).
-
----
-
-## Install
-
-### Fedora (COPR)
+## Quick start
 
 ```bash
-dnf copr enable sisyphuscode/boulderX
-dnf install boulderX
-```
+# Fedora deps
+sudo dnf install rust cargo gtk4-devel libadwaita-devel openssl-devel
 
-### Fedora — From Source
-
-Install build dependencies:
-
-```bash
-sudo dnf install rust cargo gtk4-devel libadwaita-devel openssl-devel desktop-file-utils libappstream-glib
-```
-
-Build and run:
-
-```bash
 cargo build --release
 ./target/release/boulderX
+# or: cargo run --release
 ```
 
-Or just:
+1. **Accounts / IRC** — nick, optional NickServ/SASL password, server.
+2. **Connect** — TLS on port 6697 by default (`irc_port` / `irc_use_tls` in settings.toml).
+3. Join with the join box or `/join #channel`.
+4. **MX** — homeserver + user/password for Matrix.
+
+## Build / test
 
 ```bash
-cargo run
+cargo test                 # pure unit tests (commands, channels, config, rooms)
+cargo build --release
+cargo build --release --offline   # vendored tree
 ```
 
-### RPM — Build locally
-
-```bash
-bash packaging/build-rpm.sh
-```
-
-This will create an installable `.rpm` in `~/rpmbuild/RPMS/`.
-
----
-
-## Development
-
-On Fedora:
-
-```bash
-sudo dnf install rust cargo gtk4-devel libadwaita-devel openssl-devel
-cargo run
-```
-
----
-
-## Module Layout
+## Module layout
 
 ```
 src/
-  main.rs          — entry point
-  app.rs           — unified AppModel (IRC + Matrix), all AppInput handlers
+  main.rs          — GTK entry; installs shared Tokio runtime
+  runtime.rs       — multi-thread runtime for Matrix from the UI thread
+  app.rs           — AppModel + input handlers
   irc/
-    connection.rs  — IrcConnection::spawn(), full IRC event loop
-    commands.rs    — command parsing helpers
+    connection.rs  — IRC thread + event loop (port/TLS aware)
+    commands.rs    — slash command parser (unit-tested)
   matrix/
-    client.rs      — MatrixClient wrapper (login, send, sync)
-    rooms.rs       — RoomRegistry (unread counts, room metadata)
+    client.rs      — login, send, sync, leave; XDG store path
+    rooms.rs       — RoomRegistry + unread
     sync.rs        — MatrixEvent → AppInput bridge
-  ui/
-    sidebar.rs     — Element X room rows, protocol badges, section headers
-    chat_view.rs   — bubble renderer, tag setup, history render
-    composer.rs    — bottom input bar
-    dialogs.rs     — Matrix login + join room dialogs
-  channels.rs      — channel name parsing helpers
-  config.rs        — TOML settings load/save
-  notify.rs        — desktop notifications
-  theme.rs         — CSS load, titlebar, window attach
+  config.rs        — TOML load/save
+  channels.rs      — channel/DM join helpers
+  ui/              — sidebar, chat view, dialogs, composer helpers
 ```
 
----
+## Packaging
 
-## Packaging Notes
-
-- Fedora RPM spec in `packaging/boulderX.spec`
-- COPR automation in `.copr/Makefile`
-- AppStream metainfo in `packaging/org.Sisyphus.BoulderX.metainfo.xml`
-- Icons at 128×128 and 256×256 in `assets/`
-- Requires: `gtk4`, `libadwaita`, `openssl-libs`, `sqlite-libs`
-- Offline vendored build supported (`cargo build --release --offline`)
-
----
+- RPM: `packaging/boulderX.spec`, `packaging/build-rpm.sh`
+- Desktop + AppStream under `packaging/`
+- Icons in `assets/`
 
 ## License
 

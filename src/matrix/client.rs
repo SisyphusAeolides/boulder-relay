@@ -7,6 +7,7 @@ use matrix_sdk::{
         OwnedRoomId, OwnedUserId,
     },
 };
+use std::path::PathBuf;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
@@ -24,11 +25,25 @@ pub struct MatrixClient {
     pub inner: Client,
 }
 
+/// Stable XDG data dir for the Matrix SQLite store (not process CWD).
+pub fn matrix_store_dir() -> PathBuf {
+    let base = std::env::var("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::env::var("HOME")
+                .map(|h| PathBuf::from(h).join(".local").join("share"))
+                .unwrap_or_else(|_| PathBuf::from(".local/share"))
+        });
+    base.join("boulderX").join("matrix")
+}
+
 impl MatrixClient {
     pub async fn new(homeserver: &str) -> anyhow::Result<Self> {
+        let store = matrix_store_dir();
+        std::fs::create_dir_all(&store)?;
         let client = Client::builder()
             .homeserver_url(homeserver)
-            .sqlite_store("boulderX-matrix", None)
+            .sqlite_store(store, None)
             .build()
             .await?;
         Ok(Self { inner: client })
@@ -56,10 +71,19 @@ impl MatrixClient {
     }
 
     pub async fn send_message(&self, room_id: &OwnedRoomId, body: &str) -> anyhow::Result<()> {
-        if let Some(room) = self.inner.get_room(room_id) {
-            let content = RoomMessageEventContent::text_plain(body);
-            room.send(content).await?;
-        }
+        let Some(room) = self.inner.get_room(room_id) else {
+            anyhow::bail!("room not found in session: {room_id}");
+        };
+        let content = RoomMessageEventContent::text_plain(body);
+        room.send(content).await?;
+        Ok(())
+    }
+
+    pub async fn leave_room(&self, room_id: &OwnedRoomId) -> anyhow::Result<()> {
+        let Some(room) = self.inner.get_room(room_id) else {
+            anyhow::bail!("room not found: {room_id}");
+        };
+        room.leave().await?;
         Ok(())
     }
 
@@ -77,6 +101,7 @@ impl MatrixClient {
 
     pub fn start_sync(&self, tx: mpsc::UnboundedSender<MatrixEvent>) {
         let inner = self.inner.clone();
+        // Caller must invoke this from the shared runtime (runtime::spawn).
         tokio::spawn(async move {
             let user_id = inner.user_id().map(|u| u.to_string()).unwrap_or_default();
             let _ = tx.send(MatrixEvent::Connected { user_id });
